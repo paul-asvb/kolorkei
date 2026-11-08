@@ -6,6 +6,7 @@ use std::sync::Arc;
 
 use bevy::asset::RenderAssetUsages;
 use bevy::audio::AudioSource;
+use bevy::ecs::system::SystemParam;
 use bevy::mesh::{Indices, PrimitiveTopology};
 use bevy::prelude::*;
 
@@ -24,8 +25,12 @@ fn main() {
         .insert_resource(TargetBackground(Color::hsl(0.0, 0.0, 0.07)))
         .init_resource::<Rng>()
         .init_resource::<Layer>()
+        .init_resource::<TouchGesture>()
         .add_systems(Startup, setup)
-        .add_systems(Update, (handle_keys, animate_shapes, fade_background))
+        .add_systems(
+            Update,
+            (handle_keys, handle_mouse, handle_touch, animate_shapes, fade_background),
+        )
         .run();
 }
 
@@ -103,6 +108,13 @@ struct TargetBackground(Color);
 /// Monotonic z-layer so newer shapes draw on top of older ones.
 #[derive(Resource, Default)]
 struct Layer(u32);
+
+/// Tracks whether the current touch gesture used two or more fingers, so a
+/// two-finger tap clears shapes instead of spawning one per finger.
+#[derive(Resource, Default)]
+struct TouchGesture {
+    multi: bool,
+}
 
 fn setup(mut commands: Commands) {
     commands.spawn(Camera2d);
@@ -203,108 +215,181 @@ fn random_mesh(rng: &mut Rng, s: f32) -> Mesh {
     }
 }
 
-fn handle_keys(
-    mut commands: Commands,
-    keys: Res<ButtonInput<KeyCode>>,
-    time: Res<Time>,
-    window: Single<&Window>,
-    mut rng: ResMut<Rng>,
-    mut layer: ResMut<Layer>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
-    mut audio: ResMut<Assets<AudioSource>>,
-    mut target_bg: ResMut<TargetBackground>,
-    shapes: Query<Entity, With<Shape>>,
-) {
-    for key in keys.get_just_pressed() {
-        // Fold the key and the exact press time into the RNG state.
-        let mut hasher = std::collections::hash_map::DefaultHasher::new();
-        std::hash::Hash::hash(key, &mut hasher);
-        rng.mix(std::hash::Hasher::finish(&hasher) ^ time.elapsed().as_nanos() as u64);
+/// Everything needed to spawn a shape or clear shapes, shared by the
+/// keyboard, mouse and touch systems.
+#[derive(SystemParam)]
+struct Stage<'w, 's> {
+    commands: Commands<'w, 's>,
+    time: Res<'w, Time>,
+    window: Single<'w, 's, &'static Window>,
+    camera: Single<'w, 's, (&'static Camera, &'static GlobalTransform)>,
+    rng: ResMut<'w, Rng>,
+    layer: ResMut<'w, Layer>,
+    meshes: ResMut<'w, Assets<Mesh>>,
+    materials: ResMut<'w, Assets<ColorMaterial>>,
+    audio: ResMut<'w, Assets<AudioSource>>,
+    target_bg: ResMut<'w, TargetBackground>,
+    shapes: Query<'w, 's, Entity, With<Shape>>,
+}
 
-        if matches!(key, KeyCode::Space | KeyCode::Enter | KeyCode::NumpadEnter) {
-            clear_half(&mut commands, &mut rng, &shapes);
-            let bytes = synthesize_sweep(&mut rng);
-            commands.spawn((
-                AudioPlayer(audio.add(AudioSource { bytes: Arc::from(bytes) })),
-                PlaybackSettings::DESPAWN,
-            ));
-            continue;
-        }
+impl Stage<'_, '_> {
+    /// Fold an input event and the exact time it happened into the RNG state.
+    fn reseed(&mut self, salt: u64) {
+        self.rng.mix(salt ^ self.time.elapsed().as_nanos() as u64);
+    }
 
-        let half_w = window.width() / 2.0;
-        let half_h = window.height() / 2.0;
-        let min_dim = window.width().min(window.height());
+    /// Convert a window (viewport) position to a world position, if possible.
+    fn world_from_viewport(&self, viewport_pos: Vec2) -> Option<Vec2> {
+        let (camera, camera_tf) = *self.camera;
+        camera.viewport_to_world_2d(camera_tf, viewport_pos).ok()
+    }
+
+    /// Spawn one shape. `at` is a world position; `None` picks a random spot.
+    fn spawn_shape(&mut self, at: Option<Vec2>) {
+        let half_w = self.window.width() / 2.0;
+        let half_h = self.window.height() / 2.0;
+        let min_dim = self.window.width().min(self.window.height());
+        let rng = &mut *self.rng;
 
         let hue = rng.range(0.0, 360.0);
-        let color = vivid(&mut rng, hue);
-        let size = min_dim * rng.range(0.03, 0.17);
-        let pos = Vec2::new(
-            rng.range(-half_w * 0.92, half_w * 0.92),
-            rng.range(-half_h * 0.92, half_h * 0.92),
-        );
-        layer.0 += 1;
-        let z = layer.0 as f32 * 0.01;
+        let color = vivid(rng, hue);
+        let size = min_dim * rng.range(0.04, 0.18);
+        let pos = at.unwrap_or_else(|| {
+            Vec2::new(
+                rng.range(-half_w * 0.92, half_w * 0.92),
+                rng.range(-half_h * 0.92, half_h * 0.92),
+            )
+        });
+        self.layer.0 += 1;
+        let z = self.layer.0 as f32 * 0.01;
 
-        let mut shape = commands.spawn((
-            Mesh2d(meshes.add(random_mesh(&mut rng, size))),
-            MeshMaterial2d(materials.add(color)),
-            Transform::from_xyz(pos.x, pos.y, z)
-                .with_rotation(Quat::from_rotation_z(rng.range(0.0, TAU)))
-                .with_scale(Vec3::splat(0.01)),
-            Shape { spin: rng.range(-0.8, 0.8) },
-            PopIn { t: 0.0, overshoot: rng.range(0.15, 0.5) },
-        ));
+        let mesh = self.meshes.add(random_mesh(rng, size));
+        let material = self.materials.add(color);
+        let rotation = Quat::from_rotation_z(rng.range(0.0, TAU));
+        let spin = rng.range(-0.8, 0.8);
+        let overshoot = rng.range(0.15, 0.5);
 
         // About half the shapes get a smaller contrasting shape nested inside,
         // and some get a third one: two- and three-tone compositions.
-        let mut inner_hue = hue;
-        let mut inner_size = size;
         let layers = match rng.below(10) {
             0..=4 => 0,
             5..=8 => 1,
             _ => 2,
         };
+        let mut inner_hue = hue;
+        let mut inner_size = size;
+        let mut inner = Vec::with_capacity(layers);
         for depth in 0..layers {
-            inner_hue = contrasting_hue(&mut rng, inner_hue);
+            inner_hue = contrasting_hue(rng, inner_hue);
             inner_size *= rng.range(0.4, 0.65);
-            let inner_color = vivid(&mut rng, inner_hue);
-            let inner_mesh = meshes.add(random_mesh(&mut rng, inner_size));
-            let inner_mat = materials.add(inner_color);
-            let rot = rng.range(0.0, TAU);
+            let inner_color = vivid(rng, inner_hue);
+            inner.push((
+                self.meshes.add(random_mesh(rng, inner_size)),
+                self.materials.add(inner_color),
+                Transform::from_xyz(0.0, 0.0, 0.001 * (depth as f32 + 1.0))
+                    .with_rotation(Quat::from_rotation_z(rng.range(0.0, TAU))),
+            ));
+        }
+
+        let mut shape = self.commands.spawn((
+            Mesh2d(mesh),
+            MeshMaterial2d(material),
+            Transform::from_xyz(pos.x, pos.y, z)
+                .with_rotation(rotation)
+                .with_scale(Vec3::splat(0.01)),
+            Shape { spin },
+            PopIn { t: 0.0, overshoot },
+        ));
+        for (inner_mesh, inner_mat, inner_tf) in inner {
             shape.with_children(|parent| {
-                parent.spawn((
-                    Mesh2d(inner_mesh),
-                    MeshMaterial2d(inner_mat),
-                    Transform::from_xyz(0.0, 0.0, 0.001 * (depth as f32 + 1.0))
-                        .with_rotation(Quat::from_rotation_z(rot)),
-                ));
+                parent.spawn((Mesh2d(inner_mesh), MeshMaterial2d(inner_mat), inner_tf));
             });
         }
 
         // The background drifts toward a dark version of the same hue.
-        target_bg.0 = Color::hsl(hue, 0.45, 0.09);
+        self.target_bg.0 = Color::hsl(hue, 0.45, 0.09);
 
         // Sound: a short tone on a pentatonic scale, random waveform.
         let tone_len = rng.range(0.5, 1.4);
-        let bytes = synthesize_tone(&mut rng, tone_len);
-        commands.spawn((
-            AudioPlayer(audio.add(AudioSource { bytes: Arc::from(bytes) })),
+        let bytes = synthesize_tone(rng, tone_len);
+        self.play(bytes);
+    }
+
+    /// Despawn a random half (rounded up) of all top-level shapes.
+    fn clear_half(&mut self) {
+        let mut all: Vec<Entity> = self.shapes.iter().collect();
+        if !all.is_empty() {
+            self.rng.shuffle(&mut all);
+            let remove = all.len().div_ceil(2);
+            for entity in all.into_iter().take(remove) {
+                self.commands.entity(entity).despawn();
+            }
+        }
+        let bytes = synthesize_sweep(&mut self.rng);
+        self.play(bytes);
+    }
+
+    fn play(&mut self, wav: Vec<u8>) {
+        self.commands.spawn((
+            AudioPlayer(self.audio.add(AudioSource { bytes: Arc::from(wav) })),
             PlaybackSettings::DESPAWN,
         ));
     }
 }
 
-/// Despawn a random half (rounded up) of all top-level shapes.
-fn clear_half(commands: &mut Commands, rng: &mut Rng, shapes: &Query<Entity, With<Shape>>) {
-    let mut all: Vec<Entity> = shapes.iter().collect();
-    if all.is_empty() {
-        return;
+fn handle_keys(keys: Res<ButtonInput<KeyCode>>, mut stage: Stage) {
+    for key in keys.get_just_pressed() {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        std::hash::Hash::hash(key, &mut hasher);
+        stage.reseed(std::hash::Hasher::finish(&hasher));
+
+        if matches!(key, KeyCode::Space | KeyCode::Enter | KeyCode::NumpadEnter) {
+            stage.clear_half();
+        } else {
+            stage.spawn_shape(None);
+        }
     }
-    rng.shuffle(&mut all);
-    let remove = all.len().div_ceil(2);
-    for entity in all.into_iter().take(remove) {
-        commands.entity(entity).despawn();
+}
+
+/// Left click spawns a shape under the cursor, right click clears half.
+fn handle_mouse(buttons: Res<ButtonInput<MouseButton>>, mut stage: Stage) {
+    if buttons.just_pressed(MouseButton::Left) {
+        let at = stage
+            .window
+            .cursor_position()
+            .and_then(|p| stage.world_from_viewport(p));
+        let salt = at.map_or(1, |p| p.x.to_bits() as u64 ^ ((p.y.to_bits() as u64) << 32));
+        stage.reseed(salt);
+        stage.spawn_shape(at);
+    }
+    if buttons.just_pressed(MouseButton::Right) {
+        stage.reseed(2);
+        stage.clear_half();
+    }
+}
+
+/// A single-finger tap spawns a shape where the finger lifted; a tap with two
+/// or more fingers clears half the shapes.
+fn handle_touch(touches: Res<Touches>, mut gesture: ResMut<TouchGesture>, mut stage: Stage) {
+    let active = touches.iter().count();
+
+    if touches.any_just_pressed() && active >= 2 && !gesture.multi {
+        gesture.multi = true;
+        stage.reseed(active as u64);
+        stage.clear_half();
+    }
+
+    for touch in touches.iter_just_released() {
+        if gesture.multi {
+            continue;
+        }
+        let at = stage.world_from_viewport(touch.position());
+        stage.reseed(touch.id());
+        stage.spawn_shape(at);
+    }
+
+    if active == 0 && !touches.any_just_pressed() {
+        gesture.multi = false;
     }
 }
 

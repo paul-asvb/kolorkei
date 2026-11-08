@@ -1,9 +1,19 @@
 # kolorkei
 
 A tiny [Bevy](https://bevy.org) toy that runs in the browser: press any key and a random
-geometric shape in a vivid random color pops onto the screen with a random tone. Shapes stay
-until you press **Space** or **Enter**, which clears a random half of them. The background
+geometric shape in a vivid random color pops onto the screen with a random tone. On a phone,
+tap anywhere instead: the shape appears under your finger. Shapes stay until you clear a random
+half of them with **Space**, **Enter**, a **right click**, or a **two-finger tap**. The background
 drifts toward the hue of the last shape.
+
+## Controls
+
+| Input                        | Effect                                  |
+| ---------------------------- | --------------------------------------- |
+| Any key                      | Random shape at a random spot           |
+| Tap / left click             | Random shape under the finger or cursor |
+| Space, Enter, right click    | Clear a random half of the shapes       |
+| Two-finger tap               | Clear a random half of the shapes       |
 
 **Play it:** https://paul-asvb.github.io/kolorkei/
 
