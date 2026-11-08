@@ -20,6 +20,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Configure GitHub Pages (enables it on first run)
+        uses: actions/configure-pages@v5
+        with:
+          enablement: true
+
       - name: Install Rust (wasm32)
         uses: dtolnay/rust-toolchain@stable
         with:
