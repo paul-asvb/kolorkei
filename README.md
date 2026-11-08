@@ -1,0 +1,37 @@
+# kolorkei
+
+A tiny [Bevy](https://bevy.org) toy that runs in the browser: press any key and a random
+geometric shape in a random color pops onto the screen with a random tone. The background
+drifts toward the hue of the last shape.
+
+**Play it:** https://paul-asvb.github.io/kolorkei/
+
+## How it works
+
+- Shapes are Bevy 2D mesh primitives (circle, rectangle, polygon, annulus, ellipse, rhombus,
+  capsule, sector, triangle) with a `ColorMaterial`. They pop in, drift, spin and fade out.
+- Sounds are synthesized on the fly as 16-bit WAV data (sine / square / triangle / saw on a
+  C-major pentatonic scale) and handed to Bevy's audio plugin, so no asset files are needed.
+- Randomness is a small xorshift generator reseeded with the key and the press time, which
+  avoids pulling `getrandom` into the WASM build.
+
+## Development
+
+Native:
+
+```sh
+cargo run
+```
+
+Browser (needs [trunk](https://trunkrs.dev) and the `wasm32-unknown-unknown` target):
+
+```sh
+rustup target add wasm32-unknown-unknown
+cargo install trunk
+trunk serve --open
+```
+
+## Deployment
+
+Every push to `main` runs `.github/workflows/deploy.yml`, which builds the release WASM bundle
+with trunk and publishes it to GitHub Pages.

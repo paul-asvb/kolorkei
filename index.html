@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>kolorkei</title>
+    <script>
+      // Browsers create AudioContexts suspended until a user gesture. Bevy's audio
+      // backend creates its context at startup, so capture every context and resume
+      // them on the first key press / tap.
+      (() => {
+        const contexts = [];
+        for (const name of ["AudioContext", "webkitAudioContext"]) {
+          const Original = window[name];
+          if (!Original) continue;
+          const Patched = function (...args) {
+            const ctx = new Original(...args);
+            contexts.push(ctx);
+            return ctx;
+          };
+          Patched.prototype = Original.prototype;
+          window[name] = Patched;
+        }
+        const unlock = () => {
+          for (const ctx of contexts) if (ctx.state === "suspended") ctx.resume();
+          const hint = document.getElementById("hint");
+          if (hint) hint.style.opacity = "0";
+        };
+        for (const ev of ["keydown", "pointerdown", "touchstart"]) {
+          window.addEventListener(ev, unlock, { passive: true });
+        }
+      })();
+    </script>
+    <link data-trunk rel="rust" data-bin="kolorkei" data-wasm-opt="z" data-wasm-opt-params="--enable-bulk-memory --enable-nontrapping-float-to-int" />
+    <style>
+      html, body { margin: 0; height: 100%; background: #121212; overflow: hidden; }
+      canvas { display: block; width: 100vw !important; height: 100vh !important; outline: none; }
+      #hint {
+        position: fixed; left: 50%; top: 50%; transform: translate(-50%, -50%);
+        color: #ddd; font: 20px/1.5 system-ui, sans-serif; text-align: center;
+        pointer-events: none; transition: opacity 0.6s; user-select: none;
+      }
+      #hint b { font-size: 40px; letter-spacing: 0.1em; }
+    </style>
+  </head>
+  <body>
+    <div id="hint"><b>kolorkei</b><br /><small>click the page, then press any key</small></div>
+  </body>
+</html>
