@@ -1,7 +1,8 @@
 # kolorkei
 
 A tiny [Bevy](https://bevy.org) toy that runs in the browser: press any key and a random
-geometric shape in a random color pops onto the screen with a random tone. The background
+geometric shape in a vivid random color pops onto the screen with a random tone. Shapes stay
+until you press **Space** or **Enter**, which clears a random half of them. The background
 drifts toward the hue of the last shape.
 
 **Play it:** https://paul-asvb.github.io/kolorkei/
@@ -9,7 +10,9 @@ drifts toward the hue of the last shape.
 ## How it works
 
 - Shapes are Bevy 2D mesh primitives (circle, rectangle, polygon, annulus, ellipse, rhombus,
-  capsule, sector, triangle) with a `ColorMaterial`. They pop in, drift, spin and fade out.
+  capsule, sector, segment, triangle), ring outlines of most of those, plus hand-built stars
+  and crosses, each with a `ColorMaterial`. Many get one or two smaller shapes in contrasting
+  hues nested inside. They pop in with a small overshoot and keep spinning slowly.
 - Sounds are synthesized on the fly as 16-bit WAV data (sine / square / triangle / saw on a
   C-major pentatonic scale) and handed to Bevy's audio plugin, so no asset files are needed.
 - Randomness is a small xorshift generator reseeded with the key and the press time, which
